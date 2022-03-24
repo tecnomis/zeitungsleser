@@ -505,11 +505,11 @@ class ArchiveManager:
         self.server_host = self.credentials['archive_host']
         self.archive_key_start = self.credentials['archive_key']
 
-        if not os.path.isdir(downloads_folder):
-            os.mkdir(downloads_folder)
+        if not os.path.isdir(self.downloads_folder):
+            os.mkdir(self.downloads_folder)
 
-        if not os.path.isdir(renderings_folder):
-            os.mkdir(renderings_folder)
+        if not os.path.isdir(self.renderings_folder):
+            os.mkdir(self.renderings_folder)
 
 
     def save_database(self):
