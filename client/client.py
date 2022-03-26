@@ -11,6 +11,11 @@ import yaml
 import os
 
 
+# ~~~ TODO ~~~
+# - Shutdown routine
+# - Only draw on input
+
+
 class RescaleWorker:
 
     instances = []
@@ -665,6 +670,9 @@ class ArchiveManager:
 
     def set_source(self, source):
 
+        if not source:
+            return
+
         self.current_source = source
         print(f'Now using {source} as source')
 
@@ -881,10 +889,21 @@ class InputManager:
     allow_sensors = False
     allow_keyboard = True
 
+    sensors_dpdt = 0.1
+
+
     keyboard_dpdt = 0.1
     keyboard_dsdt = 0.001
 
     long_press_thres = 1000
+
+    gpio_pins = {'shutdown': 0, 'led_pwm': 11, 'source_0': 36, 'source_1': 38, 'source_2': 40}
+    analog_channels = {'joystick_x': 0, 'joystick_y': 1, 'magnification': 2, 'next_entry': 3, 'prev_entry': 4, 'next_page': 5, 'prev_page': 6}
+    spi_bus_device = (0, 0)
+
+    keyboard_assign = { \
+        'right': pygame.K_d, 'left': pygame.K_a, 'up': pygame.K_w, 'down': pygame.K_s, \
+        'zoom_in': pygame.K_e, 'zoom_out': pygame.K_q, 'next_entry': pygame.K_m, 'prev_entry': pygame.K_n, 'next_page': pygame.K_x, 'prev_page': pygame.K_y}
 
     NEXTENTRY =     0
     PREVENTRY =     1
@@ -918,19 +937,24 @@ class InputManager:
             import spidev
             import mraa
 
-            # TODO
-            #self.gpio_shutdown = mraa.Gpio(???)
+            self.spi = spidev.Spidev()
 
-            self.pwm_led_green = mraa.Pwm(11)
+            self.spi.max_speed_hz = 1000000
+            self.spi.open(*spi_bus_device)
+
+            # TODO
+            #self.gpio_shutdown = mraa.Gpio(gpio_pins['shutdown'])
+
+            self.pwm_led_green = mraa.Pwm(gpio_pins['led_pwm'])
             self.pwm_led_green.enable(True)
 
-            self.gpio_source_0 = mraa.Gpio(36)
+            self.gpio_source_0 = mraa.Gpio(gpio_pins['source_0'])
             self.gpio_source_0.dir(mraa.DIR_IN)
 
-            self.gpio_source_1 = mraa.Gpio(38)
+            self.gpio_source_1 = mraa.Gpio(gpio_pins['source_1'])
             self.gpio_source_1.dir(mraa.DIR_IN)
 
-            self.gpio_source_2 = mraa.Gpio(40)
+            self.gpio_source_2 = mraa.Gpio(gpio_pins['source_2'])
             self.gpio_source_2.dir(mraa.DIR_IN)
 
 
@@ -938,7 +962,6 @@ class InputManager:
 
         if self.allow_sensors:
             source_selected = (gpio_source_0.read(), gpio_source_1.read(), gpio_source_2.read())
-
         else:
             source_selected = (1, 0, 0)
 
@@ -952,97 +975,148 @@ class InputManager:
         return None
 
 
-    def sensors_state(self, dt):
+    def get_channel(self, channel):
 
         if not self.allow_sensors:
-            return
+            return 0.0
+
+        adc = self.spi.xfer2([1, (8 + channel) << 4, 0])
+        value = ((adc[1] & 3) << 8) + adc[2]
+
+        return value / 1023.0
 
 
-    def keyboard_state(self, dt):
+    def button_input(self, dt):
 
-        if not self.allow_keyboard:
-            return
+        buttons_pressed = {'next_entry': 0, 'prev_entry': 0, 'next_page': 0, 'prev_page': 0}
 
-        keys = pygame.key.get_pressed()
+        if self.allow_sensors:
+            for button in buttons_pressed:
 
-        if keys[pygame.K_m]:
+                button_channel = self.analog_channels[button]
+                channel_value = self.get_channel(button_channel)
+                buttons_pressed[button] += channel_value > 0.5
+
+        if self.allow_keyboard:
+            keys_pressed = pygame.key.get_pressed()
+
+            for button in buttons_pressed:
+
+                button_key = self.keyboard_assign[button]
+                buttons_pressed[button] += keys_pressed[button_key]
+
+        if buttons_pressed['next_entry']:
+
             self.next_entry_pressed += dt
             if self.next_entry_pressed > self.long_press_thres and not self.next_entry_locked:
                 self.events.append(self.NEXTENTRYLONG)
                 self.next_entry_locked = True
+
         else:
+
             if self.next_entry_pressed > 0 and not self.next_entry_locked:
                 self.events.append(self.NEXTENTRY)
             self.next_entry_pressed = 0.0
             self.next_entry_locked = False
 
-        if keys[pygame.K_n]:
+        if buttons_pressed['prev_entry']:
+
             self.prev_entry_pressed += dt
             if self.prev_entry_pressed > self.long_press_thres and not self.prev_entry_locked:
                 self.events.append(self.PREVENTRYLONG)
                 self.prev_entry_locked = True
+
         else:
+
             if self.prev_entry_pressed > 0 and not self.prev_entry_locked:
                 self.events.append(self.PREVENTRY)
             self.prev_entry_pressed = 0.0
             self.prev_entry_locked = False
 
-        if keys[pygame.K_x]:
+        if buttons_pressed['next_page']:
+
             self.next_page_pressed += dt
             if self.next_page_pressed > self.long_press_thres and not self.next_page_locked:
                 self.events.append(self.NEXTPAGELONG)
                 self.next_page_locked = True
+
         else:
+
             if self.next_page_pressed > 0 and not self.next_page_locked:
                 self.events.append(self.NEXTPAGE)
             self.next_page_pressed = 0.0
             self.next_page_locked = False
 
-        if keys[pygame.K_y]:
+        if buttons_pressed['prev_page']:
+
             self.prev_page_pressed += dt
             if self.prev_page_pressed > self.long_press_thres and not self.prev_page_locked:
                 self.events.append(self.PREVPAGELONG)
                 self.prev_page_locked = True
+
         else:
+
             if self.prev_page_pressed > 0 and not self.prev_page_locked:
                 self.events.append(self.PREVPAGE)
             self.prev_page_pressed = 0.0
             self.prev_page_locked = False
 
 
-    def sensors_input(self, dt):
+    def control_input(self, dt):
 
-        if not self.allow_sensors:
-            return
+        translate_delta_x = 0.0
+        translate_delta_y = 0.0
 
+        if self.allow_sensors:
 
-    def keyboard_input(self, dt):
+            controls_values = {'joystick_x': 0.0, 'joystick_y': 0.0, 'magnification': 0.0}
 
-        if not self.allow_keyboard:
-            return
+            for control in controls_values:
 
-        translate_speed = self.keyboard_dpdt * dt
-        zoom_factor = 1.0 + self.keyboard_dsdt * dt
+                control_channel = self.analog_channels[control]
+                channel_value = self.get_channel(control_channel)
+                controls_values[button] += channel_value
 
-        keys = pygame.key.get_pressed()
+            sensors_translate = self.sensors_dpdt * dt
 
-        if keys[pygame.K_w]:
-            self.viewer.move_center(0.0, -translate_speed)
+            translate_delta_x += sensors_translate * (controls_values['joystick_x'] - 0.5)
+            translate_delta_y += sensors_translate * (controls_values['joystick_y'] - 0.5)
 
-        if keys[pygame.K_s]:
-            self.viewer.move_center(0.0, +translate_speed)
+            control_scale = controls_values['magnification'] * 9.0 + 1.0
+            self.viewer.set_scale(control_scale)
 
-        if keys[pygame.K_a]:
-            self.viewer.move_center(-translate_speed, 0.0)
+        if self.allow_keyboard:
 
-        if keys[pygame.K_d]:
-            self.viewer.move_center(+translate_speed, 0.0)
+            keys_pressed = pygame.key.get_pressed()
+            controls_pressed = {'right': 0, 'left': 0, 'up': 0, 'down': 0, 'zoom_in': 0, 'zoom_out': 0}
 
-        if keys[pygame.K_e]:
-            self.viewer.change_scale(zoom_factor)
+            for control in controls_pressed:
 
-        if keys[pygame.K_q]:
-            self.viewer.change_scale(1.0/zoom_factor)
+                control_key = self.keyboard_assign[control]
+                controls_pressed[control] = keys_pressed[control_key]
+
+            keyboard_translate = self.keyboard_dpdt * dt
+            keyboard_zoom = 1.0 + self.keyboard_dsdt * dt
+
+            if controls_pressed['right']:
+                translate_delta_x += keyboard_translate
+
+            if controls_pressed['left']:
+                translate_delta_x -= keyboard_translate
+
+            if controls_pressed['up']:
+                translate_delta_y -= keyboard_translate
+
+            if controls_pressed['down']:
+                translate_delta_y += keyboard_translate
+
+            if controls_pressed['zoom_in']:
+                self.viewer.change_scale(keyboard_zoom)
+
+            if controls_pressed['zoom_out']:
+                self.viewer.change_scale(1.0 / keyboard_zoom)
+
+        self.viewer.move_center(translate_delta_x, translate_delta_y)
 
 
     def set_green_led(self, level):
@@ -1105,11 +1179,8 @@ while True:
 
     dt = image_viewer.draw()
 
-    input_man.sensors_state(dt)
-    input_man.keyboard_state(dt)
-
-    input_man.sensors_input(dt)
-    input_man.keyboard_input(dt)
+    input_man.button_input(dt)
+    input_man.control_input(dt)
 
     for event in input_man.get_events():
         good = False
